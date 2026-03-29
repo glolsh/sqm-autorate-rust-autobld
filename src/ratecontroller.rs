@@ -32,16 +32,6 @@ pub enum StatsDirection {
     TX,
 }
 
-fn generate_initial_speeds(base_speed: f64, size: u32) -> Vec<f64> {
-    let mut rates = Vec::new();
-
-    for _ in 0..size {
-        rates.push((fastrand::f64() * 0.2 + 0.75) * base_speed);
-    }
-
-    rates
-}
-
 fn get_interface_stats(
     config: &Config,
     down_direction: StatsDirection,
@@ -72,15 +62,16 @@ struct State {
     qdisc: Qdisc,
     load: f64,
     next_rate: f64,
-    nrate: usize,
     previous_bytes: i128,
     prev_t: Instant,
-    safe_rates: Vec<f64>,
     utilisation: f64,
+    cooldown_until: Option<Instant>,
+    congestion_ceiling: f64,
+    status: String,
 }
 
 impl State {
-    fn new(qdisc: Qdisc, previous_bytes: i128, safe_rates: Vec<f64>) -> Self {
+    fn new(qdisc: Qdisc, previous_bytes: i128) -> Self {
         State {
             current_bytes: 0,
             current_rate: 0.0,
@@ -88,12 +79,13 @@ impl State {
             deltas: Vec::new(),
             load: 0.0,
             next_rate: 0.0,
-            nrate: 0,
             qdisc,
             previous_bytes,
             prev_t: Instant::now(),
-            safe_rates,
             utilisation: 0.0,
+            cooldown_until: None,
+            congestion_ceiling: 0.0,
+            status: "INIT".to_string(),
         }
     }
 }
@@ -112,18 +104,18 @@ pub struct Ratecontroller {
 
 impl Ratecontroller {
     fn calculate_rate(&mut self, direction: Direction) -> anyhow::Result<()> {
-        let (base_rate, delay_ms, min_rate, state) = if direction == Direction::Down {
+        let (delay_ms, min_rate, max_rate, state) = if direction == Direction::Down {
             (
-                self.config.download_base_kbits,
                 self.config.download_delay_ms,
                 self.config.download_min_kbits,
+                self.config.download_max_kbits,
                 &mut self.state_dl,
             )
         } else {
             (
-                self.config.upload_base_kbits,
                 self.config.upload_delay_ms,
                 self.config.upload_min_kbits,
+                self.config.upload_max_kbits,
                 &mut self.state_ul,
             )
         };
@@ -161,40 +153,39 @@ impl Ratecontroller {
                     direction, state.utilisation, state.load
                 );
 
-                if state.delta_stat < delay_ms
-                    && state.load > self.config.high_load_level
-                {
-                    state.safe_rates[state.nrate] = (state.current_rate * state.load).floor();
-                    let max_rate = state
-                        .safe_rates
-                        .iter()
-                        .max_by(|a, b| a.total_cmp(b))
-                        .unwrap();
-                    state.next_rate = state.current_rate
-                        * (1.0 + 0.1 * (1.0_f64 - state.current_rate / max_rate).max(0.0))
-                        + (base_rate * 0.03);
-                    state.nrate += 1;
-                    state.nrate %= self.config.speed_hist_size as usize;
-                }
+                let in_cooldown = match state.cooldown_until {
+                    Some(time) => now_t < time,
+                    None => false,
+                };
 
-                if state.delta_stat > delay_ms {
-                    match state.safe_rates.get(fastrand::usize(..state.safe_rates.len())) {
-                        Some(rnd_rate) => {
-                            state.next_rate =
-                                rnd_rate.min(0.9 * state.current_rate * state.load);
-                        }
-                        None => {
-                            state.next_rate = 0.9 * state.current_rate * state.load;
-                        }
-                    }
+                if in_cooldown {
+                    state.status = "COOLDOWN".to_string();
+                    state.next_rate = state.current_rate;
+                } else if state.delta_stat > delay_ms {
+                    state.status = "CONGESTION".to_string();
+
+                    // Multiplicative decrease based on actual throughput
+                    state.next_rate = state.utilisation * self.config.decrease_multiplier;
+
+                    state.congestion_ceiling = state.utilisation;
+                    state.cooldown_until = Some(now_t + Duration::from_secs_f64(self.config.cooldown_secs));
+                } else if state.delta_stat <= delay_ms && state.load > self.config.high_load_level {
+                    state.status = "PROBING".to_string();
+
+                    // Additive increase
+                    state.next_rate = state.current_rate + self.config.increase_step_kbits;
+
+                    // Optional guard: if approaching ceiling, could reduce step size,
+                    // but standard AIMD continues adding until next drop.
+                } else {
+                    state.status = "HOLD".to_string();
+                    state.next_rate = state.current_rate;
                 }
             }
         }
 
-        if direction == Direction::Down && self.config.download_max_kbits > 0.0 {
-            state.next_rate = state.next_rate.min(self.config.download_max_kbits);
-        } else if direction == Direction::Up && self.config.upload_max_kbits > 0.0 {
-            state.next_rate = state.next_rate.min(self.config.upload_max_kbits);
+        if max_rate > 0.0 {
+            state.next_rate = state.next_rate.min(max_rate);
         }
 
         state.next_rate = state.next_rate.max(min_rate).floor();
@@ -265,11 +256,7 @@ impl Ratecontroller {
         up_direction: StatsDirection,
     ) -> anyhow::Result<Self> {
         let dl_qdisc = Netlink::qdisc_from_ifname(config.download_interface.as_str())?;
-        let dl_safe_rates =
-            generate_initial_speeds(config.download_base_kbits, config.speed_hist_size);
         let ul_qdisc = Netlink::qdisc_from_ifname(config.upload_interface.as_str())?;
-        let ul_safe_rates =
-            generate_initial_speeds(config.upload_base_kbits, config.speed_hist_size);
 
         let (cur_rx, cur_tx) = get_interface_stats(&config, down_direction, up_direction)?;
 
@@ -280,8 +267,8 @@ impl Ratecontroller {
             owd_recent,
             reflectors_lock,
             reselect_trigger,
-            state_dl: State::new(dl_qdisc, cur_rx, dl_safe_rates),
-            state_ul: State::new(ul_qdisc, cur_tx, ul_safe_rates),
+            state_dl: State::new(dl_qdisc, cur_rx),
+            state_ul: State::new(ul_qdisc, cur_tx),
             up_direction,
         })
     }
@@ -290,7 +277,6 @@ impl Ratecontroller {
         let sleep_time = Duration::from_secs_f64(self.config.min_change_interval);
 
         let mut lastchg_t = Instant::now();
-        let mut lastdump_t = Instant::now();
 
         // set qdisc rates to 95% of base rate to avoid load traps
         self.state_dl.current_rate = self.config.download_base_kbits * 0.95;
@@ -309,23 +295,10 @@ impl Ratecontroller {
             &self.config.cake_rtt,
         )?;
 
-        let mut speed_hist_fd: Option<File> = None;
-        let mut speed_hist_fd_inner: File;
         let mut stats_fd: Option<File> = None;
         let mut stats_fd_inner: File;
 
         if !self.config.suppress_statistics {
-            speed_hist_fd_inner = File::options()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(self.config.speed_hist_file.as_str())?;
-
-            speed_hist_fd_inner.write_all("time,counter,upspeed,downspeed\n".as_bytes())?;
-            speed_hist_fd_inner.flush()?;
-
-            speed_hist_fd = Some(speed_hist_fd_inner);
-
             stats_fd_inner = File::options()
                 .create(true)
                 .write(true)
@@ -390,14 +363,50 @@ impl Ratecontroller {
                 let target_str = targets.join(", ");
 
                 use std::io::Write;
-                info!(
-                    "Target: [{}] | DL RTT: {:.2}ms | UL RTT: {:.2}ms | DL Limit: {} Kbps | UL Limit: {} Kbps",
-                    target_str,
-                    self.state_dl.delta_stat,
-                    self.state_ul.delta_stat,
-                    self.state_dl.next_rate as u64,
-                    self.state_ul.next_rate as u64
-                );
+
+                let dl_cooldown_left = match self.state_dl.cooldown_until {
+                    Some(time) if time > now_t => (time - now_t).as_secs_f64(),
+                    _ => 0.0,
+                };
+                let ul_cooldown_left = match self.state_ul.cooldown_until {
+                    Some(time) if time > now_t => (time - now_t).as_secs_f64(),
+                    _ => 0.0,
+                };
+
+                let dl_cooldown_str = if dl_cooldown_left > 0.0 {
+                    format!(" ({:.1}s left)", dl_cooldown_left)
+                } else {
+                    "".to_string()
+                };
+
+                let ul_cooldown_str = if ul_cooldown_left > 0.0 {
+                    format!(" ({:.1}s left)", ul_cooldown_left)
+                } else {
+                    "".to_string()
+                };
+
+                if self.state_dl.status == "CONGESTION" {
+                    info!("[CONGESTION] DL Target: [{}] | RTT: {:.2}ms | Ceiling: {:.0} Kbps | Dropping to: {} Kbps",
+                          target_str, self.state_dl.delta_stat, self.state_dl.congestion_ceiling, self.state_dl.next_rate as u64);
+                } else if self.state_dl.status == "PROBING" {
+                    info!("[PROBING] DL Target: [{}] | RTT: {:.2}ms | Limit: {} Kbps",
+                          target_str, self.state_dl.delta_stat, self.state_dl.next_rate as u64);
+                } else if self.state_dl.status == "COOLDOWN" || self.state_dl.status == "HOLD" {
+                    info!("[{}] DL Target: [{}] | RTT: {:.2}ms | Holding at: {} Kbps{}",
+                          self.state_dl.status, target_str, self.state_dl.delta_stat, self.state_dl.next_rate as u64, dl_cooldown_str);
+                }
+
+                if self.state_ul.status == "CONGESTION" {
+                    info!("[CONGESTION] UL Target: [{}] | RTT: {:.2}ms | Ceiling: {:.0} Kbps | Dropping to: {} Kbps",
+                          target_str, self.state_ul.delta_stat, self.state_ul.congestion_ceiling, self.state_ul.next_rate as u64);
+                } else if self.state_ul.status == "PROBING" {
+                    info!("[PROBING] UL Target: [{}] | RTT: {:.2}ms | Limit: {} Kbps",
+                          target_str, self.state_ul.delta_stat, self.state_ul.next_rate as u64);
+                } else if self.state_ul.status == "COOLDOWN" || self.state_ul.status == "HOLD" {
+                    info!("[{}] UL Target: [{}] | RTT: {:.2}ms | Holding at: {} Kbps{}",
+                          self.state_ul.status, target_str, self.state_ul.delta_stat, self.state_ul.next_rate as u64, ul_cooldown_str);
+                }
+
                 let _ = std::io::stdout().flush();
 
                 if self.state_dl.next_rate != self.state_dl.current_rate
@@ -455,27 +464,6 @@ impl Ratecontroller {
                 lastchg_t = now_t;
             }
 
-            if let Some(ref mut fd) = speed_hist_fd {
-                if now_t.duration_since(lastdump_t).as_secs_f64() > 300.0 {
-                    for i in 0..self.config.speed_hist_size as usize {
-                        let hist_time = Time::new(ClockId::Realtime);
-                        if let Err(e) = fd.write_all(
-                            format!(
-                                "{},{},{},{}\n",
-                                hist_time.as_secs_f64(),
-                                i,
-                                self.state_ul.safe_rates[i],
-                                self.state_dl.safe_rates[i]
-                            )
-                            .as_bytes(),
-                        ) {
-                            warn!("Failed to write speed history file: {}", e);
-                        }
-                    }
-
-                    lastdump_t = now_t;
-                }
-            }
         }
     }
 }
