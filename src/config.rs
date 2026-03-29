@@ -48,15 +48,12 @@ pub struct Config {
     pub upload_interface: String,
     pub download_base_kbits: f64,
     pub download_max_kbits: f64,
-    pub download_min_percent: f64,
     pub download_min_kbits: f64,
     pub upload_base_kbits: f64,
     pub upload_max_kbits: f64,
-    pub upload_min_percent: f64,
     pub upload_min_kbits: f64,
 
     // Output section
-    pub speed_hist_file: String,
     pub stats_file: String,
     pub suppress_statistics: bool,
     pub cake_ack_filter: bool,
@@ -70,9 +67,13 @@ pub struct Config {
     pub num_reflectors: u8,
     pub peer_reselection_time: u64,
     pub reflectors: String,
-    pub speed_hist_size: u32,
     pub tick_interval: f64,
     pub upload_delay_ms: f64,
+
+    // AIMD Rate Control
+    pub increase_step_kbits: f64,
+    pub decrease_multiplier: f64,
+    pub cooldown_secs: f64,
 }
 
 impl Config {
@@ -94,8 +95,11 @@ impl Config {
                 "sqm-autorate.main.download_max_kbits",
                 Some(0.0),
             )?,
-            download_min_percent: 0.0, // placeholder, computed below
-            download_min_kbits: 0.0,   // placeholder, computed below
+            download_min_kbits: Self::get::<f64>(
+                "SQMA_DOWNLOAD_MIN_KBITS",
+                "sqm-autorate.main.download_min_kbits",
+                Some(1000.0),
+            )?,
             upload_base_kbits: Self::get::<f64>(
                 "SQMA_UPLOAD_BASE_KBITS",
                 "sqm-autorate.main.upload_base_kbits",
@@ -111,14 +115,12 @@ impl Config {
                 "sqm-autorate.main.upload_max_kbits",
                 Some(0.0),
             )?,
-            upload_min_percent: 0.0, // placeholder, computed below
-            upload_min_kbits: 0.0,   // placeholder, computed below
-            // Output section
-            speed_hist_file: Self::get::<String>(
-                "SQMA_SPEED_HIST_FILE",
-                "sqm-autorate.main.speed_hist_file",
-                Some("/tmp/sqm-speedhist.csv".parse()?),
+            upload_min_kbits: Self::get::<f64>(
+                "SQMA_UPLOAD_MIN_KBITS",
+                "sqm-autorate.main.upload_min_kbits",
+                Some(1000.0),
             )?,
+            // Output section
             stats_file: Self::get::<String>(
                 "SQMA_STATS_FILE",
                 "sqm-autorate.main.stats_file",
@@ -143,7 +145,7 @@ impl Config {
             download_delay_ms: Self::get::<f64>(
                 "SQMA_DOWNLOAD_DELAY_MS",
                 "sqm-autorate.main.download_delay_ms",
-                Some(15.0),
+                Some(20.0),
             )?,
             high_load_level: Self::get::<f64>(
                 "SQMA_HIGH_LOAD_LEVEL",
@@ -175,11 +177,6 @@ impl Config {
                 "sqm-autorate.main.reflectors",
                 Some("".parse()?),
             )?,
-            speed_hist_size: Self::get::<u32>(
-                "SQMA_SPEED_HIST_SIZE",
-                "sqm-autorate.main.speed_hist_size",
-                Some(100),
-            )?,
             tick_interval: Self::get::<f64>(
                 "SQMA_TICK_INTERVAL",
                 "sqm-autorate.main.tick_interval",
@@ -188,41 +185,32 @@ impl Config {
             upload_delay_ms: Self::get::<f64>(
                 "SQMA_UPLOAD_DELAY_MS",
                 "sqm-autorate.main.upload_delay_ms",
-                Some(15.0),
+                Some(20.0),
+            )?,
+            increase_step_kbits: Self::get::<f64>(
+                "SQMA_INCREASE_STEP_KBITS",
+                "sqm-autorate.main.increase_step_kbits",
+                Some(5000.0),
+            )?,
+            decrease_multiplier: Self::get::<f64>(
+                "SQMA_DECREASE_MULTIPLIER",
+                "sqm-autorate.main.decrease_multiplier",
+                Some(0.85),
+            )?,
+            cooldown_secs: Self::get::<f64>(
+                "SQMA_COOLDOWN_SECS",
+                "sqm-autorate.main.cooldown_secs",
+                Some(10.0),
             )?,
         };
 
         let mut config = config;
-
-        config.download_min_percent = Self::get::<f64>(
-            "SQMA_DOWNLOAD_MIN_PERCENT",
-            "sqm-autorate.main.download_min_percent",
-            Some(50.0),
-        )?;
-
-        config.upload_min_percent = Self::get::<f64>(
-            "SQMA_UPLOAD_MIN_PERCENT",
-            "sqm-autorate.main.upload_min_percent",
-            Some(50.0),
-        )?;
 
         if config.download_base_kbits == 0.0 {
             config.download_base_kbits = 10_000_000.0;
         }
         if config.upload_base_kbits == 0.0 {
             config.upload_base_kbits = 10_000_000.0;
-        }
-
-        config.download_min_kbits =
-            (config.download_base_kbits * config.download_min_percent / 100.0).floor();
-        config.upload_min_kbits =
-            (config.upload_base_kbits * config.upload_min_percent / 100.0).floor();
-
-        if config.download_min_percent == 0.0 {
-            config.download_min_kbits = 1000.0;
-        }
-        if config.upload_min_percent == 0.0 {
-            config.upload_min_kbits = 1000.0;
         }
 
         Ok(config)

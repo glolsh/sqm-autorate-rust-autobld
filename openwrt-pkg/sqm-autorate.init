@@ -18,16 +18,20 @@ start_service() {
     config_get dl_max main download_max_kbits '0'
     config_get ul_base main upload_base_kbits '750000'
     config_get ul_max main upload_max_kbits '0'
-    config_get dl_min main download_min_percent '50'
-    config_get ul_min main upload_min_percent '50'
-    config_get dl_delay main download_delay_ms '60.0'
-    config_get ul_delay main upload_delay_ms '60.0'
+    config_get dl_min main download_min_kbits '375000'
+    config_get ul_min main upload_min_kbits '375000'
+    config_get dl_delay main download_delay_ms '20.0'
+    config_get ul_delay main upload_delay_ms '20.0'
     config_get high_load main high_load_level '0.5'
     
     config_get reflectors main reflectors ''
     config_get log_level main log_level 'info'
     config_get cake_ack_filter main cake_ack_filter 'false'
     config_get cake_rtt main cake_rtt '100ms'
+
+    config_get increase_step_kbits main increase_step_kbits '5000.0'
+    config_get decrease_multiplier main decrease_multiplier '0.85'
+    config_get cooldown_secs main cooldown_secs '10.0'
 
     procd_open_instance
     procd_set_param command $PROG
@@ -42,14 +46,17 @@ start_service() {
         SQMA_DOWNLOAD_MAX_KBITS="$dl_max" \
         SQMA_UPLOAD_BASE_KBITS="$ul_base" \
         SQMA_UPLOAD_MAX_KBITS="$ul_max" \
-        SQMA_DOWNLOAD_MIN_PERCENT="$dl_min" \
-        SQMA_UPLOAD_MIN_PERCENT="$ul_min" \
+        SQMA_DOWNLOAD_MIN_KBITS="$dl_min" \
+        SQMA_UPLOAD_MIN_KBITS="$ul_min" \
         SQMA_DOWNLOAD_DELAY_MS="$dl_delay" \
         SQMA_UPLOAD_DELAY_MS="$ul_delay" \
         SQMA_HIGH_LOAD_LEVEL="$high_load" \
         SQMA_REFLECTORS="$reflectors" \
         SQMA_CAKE_ACK_FILTER="$cake_ack_filter" \
-        SQMA_CAKE_RTT="$cake_rtt"
+        SQMA_CAKE_RTT="$cake_rtt" \
+        SQMA_INCREASE_STEP_KBITS="$increase_step_kbits" \
+        SQMA_DECREASE_MULTIPLIER="$decrease_multiplier" \
+        SQMA_COOLDOWN_SECS="$cooldown_secs"
 
     procd_set_param respawn
     procd_set_param stdout 1
