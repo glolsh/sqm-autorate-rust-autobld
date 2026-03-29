@@ -1,59 +1,68 @@
-## Summary
+# sqm‑autorate‑rust‑hybrid
 
-**sqm‑autorate‑rust** is a Rust re‑implementation of the original sqm‑autorate tool, which dynamically adjusts CAKE SQM bandwidth settings by measuring traffic load and latency – ideal for variable DOCIS/cable or LTE/wireless links where capacity fluctuates. This port preserves the original’s adaptive control logic while leveraging Rust’s type safety, performance, and concurrency primitives to deliver a more robust, maintainable codebase.
+**sqm‑autorate‑rust‑hybrid** is an advanced Rust re‑implementation of the original sqm‑autorate tool. It dynamically adjusts CAKE SQM bandwidth settings by measuring real-time traffic load and latency. 
+
+While the original tool was designed for fluctuating LTE/DOCSIS links, this **Hybrid** version is enhanced with high-precision measurement logic and safety constraints, making it equally effective for high-speed symmetric Fiber (FTTH) connections where maintaining the "bottleneck" on the router is critical for zero-bufferbloat performance.
 
 ## Features
 
-* **Adaptive rate control**: continuously measures one‑way delay baselines and traffic load to tune both download and upload shaping rates in real­time .
-* **Multiple measurement types**: prefers ICMP timestamps by default, but also supports ICMP echo requests as a fallback for networks where timestamps are blocked
-* **Concurrent architecture**: separates packet sending, receiving, baselining, reflector reselection and rate‑controller loops into dedicated threads for maximum responsiveness .
-* **Configurable via environment or UCI**: reads settings from environment variables or OpenWRT UCI, with sensible defaults and type‑safe parsing .
-* **Minimal dependencies**: relies on Rust crates only (anyhow, socket2, neli, rustix), no external scripts .
+* **Adaptive Rate Control**: Continuously monitors one‑way delay baselines and traffic load to tune both download and upload shaping rates in real-time.
+* **Hybrid Per-Reflector Measurement**: 
+    * **Smart Fallback**: Prefers high-precision **ICMP Timestamps (Type 13)** for one-way delay calculation.
+    * **Dynamic Downgrade**: Automatically falls back to **ICMP Echo (Type 8)** on a per-reflector basis if Timestamps are filtered by the target (e.g., public DNS like 1.1.1.1).
+    * **Auto-Promotion**: Periodically retries Timestamps to restore maximum precision if the network path allows.
+* **Hardware Ceiling (Max Rate)**: Introduces `download_max_kbits` and `upload_max_kbits` to prevent capacity probing from exceeding physical link limits (e.g., 1Gbps Ethernet overhead or Cat 5e constraints), ensuring CAKE always remains in control.
+* **Robust Reflector Logic**: Dynamic thresholding for reflector health. The system remains operational and quiet as long as at least one reflector is reachable, avoiding log spam in small-pool configurations.
+* **Concurrent Architecture**: Dedicated threads for packet sending, receiving, baselining, and rate-control for sub-millisecond responsiveness.
+* **Deep OpenWrt Integration**: 
+    * Full UCI support via `/etc/config/sqm-autorate`.
+    * Robust boolean parsing (supports `true/false`, `1/0`, `on/off`).
+    * Environment-based logging configuration.
+* **Minimal Dependencies**: Relies on a small set of high-performance Rust crates (`anyhow`, `neli`, `rustix`), requiring no external shell scripts or heavy libraries.
+
+## Configuration Options (UCI)
+
+| Option | Description | Default |
+| :--- | :--- | :--- |
+| `enabled` | Enable/Disable the service | `0` |
+| `interface` | Interface to manage (e.g., `eth1`) | (required) |
+| `download_base_kbits` | Starting download speed | `750000` |
+| `download_max_kbits` | **Hard ceiling** for download probing (0 = Unlimited) | `0` |
+| `download_min_percent`| Minimum speed during congestion | `50` |
+| `cake_ack_filter` | Enable CAKE ACK-filtering for asymmetric links | `false` |
+| `cake_rtt` | CAKE RTT tuning (e.g., `10ms` for Fiber) | `100ms` |
 
 ## Installation
 
-You can install **sqm‑autorate‑rust** in two ways:
-
 ### 1. Native Rust build
 
-1. Ensure you have the Rust toolchain (1.70+), Cargo, and `libnl` headers installed on your Linux host.
+1. Ensure you have the Rust toolchain (1.70+), Cargo, and `libnl` headers installed.
 2. Clone and build:
 
    ```bash
-   git clone https://github.com/Lochnair/sqm-autorate-rust.git
-   cd sqm-autorate-rust
+   git clone https://github.com/glolsh/sqm-autorate-rust-hybrid.git
+   cd sqm-autorate-rust-hybrid
    cargo build --release
    ```
 3. The optimized binary is at `target/release/sqm-autorate-rust`.
 
 ### 2. OpenWrt SDK build
 
-You can also build an OpenWrt package to install in your images with the SDK:
-
-1. **Prepare the OpenWrt SDK**
-
+1. **Prepare the OpenWrt SDK** for your target platform.
+2. **Add the package** to your build system:
    ```bash
-   # Download and extract the matching SDK for your target platform
-   tar xJf openwrt-sdk-*.tar.xz
-   cd openwrt-sdk-*
+   # Create a custom feed or link the directory
+   mkdir -p package/utils
+   cp -r /path/to/sqm-autorate-rust-hybrid/openwrt-pkg package/utils/sqm-autorate-rust
    ```
-2. **Add the ****************************`openwrt-feeds`**************************** repository**
-
+3. **Configure and build**:
    ```bash
-   # Add the feed to feeds.conf.default
-   echo 'src-link lochnair https://github.com/Lochnair/openwrt-feeds.git' >> feeds.conf.default
-   ./scripts/feeds update lochnair
-   ./scripts/feeds install sqm-autorate-rust
+   make menuconfig  # Network -> sqm-autorate-rust-hybrid -> Enable
+   make package/utils/sqm-autorate-rust/compile V=s
    ```
-3. **Configure and build the package**
-
+4. **Install on your device**:
    ```bash
-   make menuconfig        # navigate to Network → sqm-autorate-rust, enable it
-   make package/sqm-autorate-rust/{clean,compile} V=s
-   ```
-4. **Install on your device**
-
-   ```bash
-   # Copy the generated .ipk from bin/packages/... to your router
    opkg install sqm-autorate-rust_*.ipk
    ```
+---
+AI Collaboration: Major architectural improvements, including the hybrid ICMP measurement logic and hardware ceiling implementation, were developed in collaboration with AI. We advocate for the transparent and ethical use of AI tools to build more reliable software.
