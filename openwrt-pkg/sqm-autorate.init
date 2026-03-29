@@ -33,6 +33,7 @@ start_service() {
     # Map UCI options to SQMA_* environment variables
     procd_set_param env \
         RUST_LOG="$log_level" \
+        SQMA_LOG_LEVEL="$log_level" \
         SQMA_DOWNLOAD_INTERFACE="$dl_iface" \
         SQMA_UPLOAD_INTERFACE="$ul_iface" \
         SQMA_DOWNLOAD_BASE_KBITS="$dl_base" \
