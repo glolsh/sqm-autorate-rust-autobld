@@ -1,8 +1,8 @@
 use crate::pinger::{PingError, PingListener, PingMode, PingReply, PingSender, ReflectorState};
 use crate::time::Time;
-use icmp_socket::packet::{WithEchoRequest, WithTimestampRequest};
-use icmp_socket::Icmpv4Message;
-use icmp_socket::Icmpv4Packet;
+use icmp_socket2::packet::WithTimestampRequest;
+use icmp_socket2::Icmpv4Message;
+use icmp_socket2::Icmpv4Packet;
 use rustix::thread::ClockId;
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -128,7 +128,7 @@ impl PingListener for PingerICMPTimestampListener {
 
 impl PingSender for PingerICMPTimestampSender {
     fn craft_packet(&mut self, id: u16, seq: u16, reflector: IpAddr) -> Icmpv4Packet {
-        let mut mode = PingMode::Timestamp;
+        let mode = PingMode::Timestamp;
 
         if let Ok(mut state_map) = self.state.write() {
             let st = state_map.entry(reflector).or_insert_with(ReflectorState::default);

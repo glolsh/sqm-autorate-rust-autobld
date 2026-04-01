@@ -1,6 +1,6 @@
 [package]
 name = "sqm-autorate-rust"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -20,7 +20,7 @@ strip = "symbols"
 
 [dependencies]
 anyhow = "1.0"
-icmp-socket = "0.4.0"
+icmp-socket2 = "0.4.1"
 netlink-bindings = { version = "0.2", features = ["rt-link", "tc"] }
 netlink-socket2 = "0.2"
 fastrand = "2"
@@ -36,6 +36,3 @@ version = "0.4"
 
 [features]
 uci = ["dep:rust-uci"]
-
-[patch.crates-io]
-icmp-socket = { git = 'https://github.com/Lochnair/icmp-socket.git', tag = "v0.4.0"}
