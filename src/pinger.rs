@@ -160,4 +160,3 @@ pub trait PingSender {
 
     fn craft_packet(&self, id: u16, seq: u16, reflector: IpAddr) -> icmp_socket2::packet::Icmpv4Packet;
 }
-}
