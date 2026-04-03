@@ -29,8 +29,6 @@ While the original tool was designed for fluctuating LTE/DOCSIS links, this **Hy
 | `download_base_kbits` | Starting download speed | `750000` |
 | `download_max_kbits` | **Hard ceiling** for download probing (0 = Unlimited) | `0` |
 | `download_min_percent`| Minimum speed during congestion | `50` |
-| `cake_ack_filter` | Enable CAKE ACK-filtering for asymmetric links | `false` |
-| `cake_rtt` | CAKE RTT tuning (e.g., `10ms` for Fiber) | `100ms` |
 
 ## Installation
 
